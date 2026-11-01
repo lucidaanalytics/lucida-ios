@@ -112,7 +112,8 @@ public final class LucidaClient: @unchecked Sendable {
     public func tracedRequest(_ request: URLRequest) -> URLRequest {
         guard let url = request.url else { return request }
         var r = request
-        for (k, v) in withLock({ core.tracing.headers(for: url) }) { r.setValue(v, forHTTPHeaderField: k) }
+        let baggage = request.value(forHTTPHeaderField: "baggage")
+        for (k, v) in withLock({ core.tracing.headers(for: url, baggage: baggage) }) { r.setValue(v, forHTTPHeaderField: k) }
         return r
     }
 

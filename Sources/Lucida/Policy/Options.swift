@@ -56,17 +56,27 @@ final class EncryptedStore: KeyValueStore, @unchecked Sendable {
 /// join this device's session. `hosts` entries match exactly, or as a suffix when they start with a dot
 /// (`.example.com`). Never added for the Lucida api host, and only while analytics consent is granted.
 /// Servers must treat these headers as client-controlled, never as authentication.
+/// The same requests carry W3C `baggage: lucida.session_id=<id>` (merged into the app's own baggage) so Watchtower links
+/// its spans, network timings and logs to this session: the Watchtower seam, Lucida captures no network or log data.
 struct TracingHeaders {
     let hosts: [String]
     let apiHost: String?
     let consent: () -> Bool
     let ids: () -> (distinctId: String, sessionId: String)
 
-    func headers(for url: URL) -> [String: String] {
+    /// `baggage` is the request's existing `baggage` value, kept (minus a stale Lucida entry) in the returned one.
+    func headers(for url: URL, baggage: String? = nil) -> [String: String] {
         guard let host = url.host?.lowercased(), !hosts.isEmpty, host != apiHost, consent(),
               hosts.contains(where: { h in let x = h.lowercased(); return x.hasPrefix(".") ? host.hasSuffix(x) : host == x })
         else { return [:] }
         let i = ids()
-        return ["X-Lucida-Distinct-Id": i.distinctId, "X-Lucida-Session-Id": i.sessionId]
+        return ["X-Lucida-Distinct-Id": i.distinctId, "X-Lucida-Session-Id": i.sessionId, "baggage": Self.withBaggage(baggage, i.sessionId)]
+    }
+
+    /// `lucida.session_id=<id>` appended to `existing` W3C baggage, replacing a stale Lucida entry.
+    static func withBaggage(_ existing: String?, _ sessionId: String) -> String {
+        let kept = (existing ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("lucida.session_id=") }
+        return (kept + ["lucida.session_id=\(sessionId)"]).joined(separator: ",")
     }
 }
