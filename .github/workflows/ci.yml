@@ -13,3 +13,5 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: swift test
+      # swift test runs on macOS, where the UIKit adapters (#if canImport(UIKit)) are skipped: compile them for iOS too.
+      - run: xcodebuild build -quiet -scheme Lucida -destination "generic/platform=iOS Simulator"
