@@ -47,10 +47,25 @@ public final class UIKitViewHierarchy: ViewHierarchySource {
         let sandboxed = maskSandboxed && (v is WKWebView || v is MKMapView)
         let sensitive = v.accessibilityIdentifier == "lucida-sensitive" || secure || sandboxed || marker?.role == .mask
         let opaque = String(describing: type(of: v)).contains("HostingView")  // SwiftUI content is not walkable
-        let kids: [WireframeNode] = depth > 40 || sandboxed ? [] : v.subviews.filter { !$0.isHidden && $0.alpha > 0.01 }.map { node($0, depth: depth + 1, unmask: unmask) }
+        var kids: [WireframeNode] = depth > 40 || sandboxed ? [] : v.subviews.filter { !$0.isHidden && $0.alpha > 0.01 }.map { node($0, depth: depth + 1, unmask: unmask) }
+        if opaque && !sensitive { kids += Self.swiftUIText(v, unmask: unmask) }
         return WireframeNode(
             kind: kind, x: v.frame.origin.x, y: v.frame.origin.y, width: v.frame.width, height: v.frame.height,
             text: sensitive ? nil : text, background: v.backgroundColor.flatMap(Self.hex), sensitive: sensitive, unmask: unmask, opaque: opaque, children: kids)
+    }
+
+    /// SwiftUI draws text without UILabels; the hosting view's accessibility elements carry the strings and their screen
+    /// frames. Only `accessibilityLabel` is read (a TextField's label is its title or placeholder), never
+    /// `accessibilityValue`, so typed text cannot leak. The text is starred by the encoder unless masking is off.
+    static func swiftUIText(_ host: UIView, unmask: Bool) -> [WireframeNode] {
+        let elements = host.accessibilityElements ?? (0..<max(0, host.accessibilityElementCount())).compactMap { host.accessibilityElement(at: $0) }
+        let screen: UICoordinateSpace = host.window?.screen.coordinateSpace ?? UIScreen.main.coordinateSpace
+        return elements.prefix(300).compactMap { e -> WireframeNode? in
+            guard let o = e as? NSObject, let label = o.accessibilityLabel, !label.isEmpty else { return nil }
+            let f = host.convert(o.accessibilityFrame, from: screen)
+            guard f.width > 0, f.height > 0, f.intersects(host.bounds) else { return nil }
+            return WireframeNode(kind: .label, x: f.origin.x, y: f.origin.y, width: f.width, height: f.height, text: label, unmask: unmask)
+        }
     }
 
     private static func hex(_ c: UIColor) -> String? {

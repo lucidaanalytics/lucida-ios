@@ -30,6 +30,8 @@ enum RRWebWireframe {
             }
             var attrs: Props = ["class": .string("lc-wf lc-wf-\(n.kind.rawValue)"), "style": .string(style), "data-lc-view": .string(n.kind.rawValue)]
             if n.kind == .image, maskImages, !n.unmask { attrs["data-lc-mask"] = .string("") }
+            // A SwiftUI hosting view is drawn as a masked placeholder: its pixels are painted over in screenshots too.
+            if n.opaque, maskText, !n.unmask { attrs["data-lc-mask"] = .string(""); attrs["class"] = .string("lc-wf lc-wf-\(n.kind.rawValue) lc-wf-opaque") }
             return .object([
                 "type": 2, "id": .number(Double(id)), "tagName": .string(isRoot ? "body" : "div"),
                 "attributes": .object(attrs),

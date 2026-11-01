@@ -66,7 +66,11 @@ SwiftUI: `.lucidaScreen("Home", client: lucida)` records `$screen` on appear.
   (per session), `throttleDelay`, `view.lucidaUnmask()`; secure fields and `lucidaMarkSensitive()` views are never readable.
   `client.startReplay()` / `stopReplay()` / `isReplayActive`.
 
-Not built: push registration (needs a scope decision), queue encryption adapter (only the port), screenshot-mode replay.
+SwiftUI in replay: hosting views are walked through their accessibility elements (labels only, never values), so SwiftUI
+text appears in wireframes starred like UIKit text; the hosting view itself is a masked placeholder (`data-lc-mask`) and is
+painted over in screenshot mode unless `.lucidaUnmask()` covers it.
+
+Not built: push registration (needs a scope decision), queue encryption adapter (only the port).
 The UIKit adapters type-check for the iOS simulator SDK but are not exercised by `swift test`.
 
 ## Ports and adapters
