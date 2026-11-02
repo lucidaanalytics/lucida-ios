@@ -8,6 +8,12 @@ import WebKit
 public final class UIKitViewHierarchy: ViewHierarchySource {
     private let captureInputText: Bool
     private let maskSandboxed: Bool
+    private let exposureLock = NSLock()
+    private var exposureFields: Set<String> = []
+    private var exposed: [(field: String, value: String)] = []
+    // Main-thread walk state for P-L12 (copied in and out under `exposureLock`).
+    private var walkFields: Set<String> = []
+    private var walkExposed: [(field: String, value: String)] = []
 
     /// `captureInputText` reads non-secure text field values (off by default; secure fields and sensitive views are never read).
     public init(captureInputText: Bool = false, maskSandboxedViews: Bool = true) {
@@ -21,7 +27,12 @@ public final class UIKitViewHierarchy: ViewHierarchySource {
             guard let window = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).flatMap(\.windows).first(where: \.isKeyWindow)
             else { return }
             let b = window.bounds
+            self.walkFields = self.exposureLock.locked { self.exposureFields }
+            self.walkExposed = []
             result = WireframeSnapshot(screen: screen, width: b.width, height: b.height, root: MarkerRegions.apply(self.node(window, depth: 0, unmask: false)))
+            let ex = self.walkExposed
+            self.walkExposed = []
+            self.exposureLock.locked { self.exposed = ex }
         }
         if Thread.isMainThread { work() } else { DispatchQueue.main.sync(execute: work) }
         return result
@@ -45,12 +56,20 @@ public final class UIKitViewHierarchy: ViewHierarchySource {
         }
         let secure = (v as? UITextField)?.isSecureTextEntry == true || (v as? UITextView)?.isSecureTextEntry == true
         let sandboxed = maskSandboxed && (v is WKWebView || v is MKMapView)
-        let sensitive = v.accessibilityIdentifier == "lucida-sensitive" || secure || sandboxed || marker?.role == .mask
+        // P-L12: a listed, non-secure field's value is read for `$sensitive_capture` only; its node stays without text.
+        var exposedField = false
+        if !secure, let id = v.accessibilityIdentifier, walkFields.contains(id) {
+            if let f = v as? UITextField { walkExposed.append((field: id, value: f.text ?? "")); exposedField = true }
+            else if let t = v as? UITextView { walkExposed.append((field: id, value: t.text ?? "")); exposedField = true }
+        }
+        let sensitive = v.accessibilityIdentifier == "lucida-sensitive" || secure || sandboxed || marker?.role == .mask || exposedField
         let opaque = String(describing: type(of: v)).contains("HostingView")  // SwiftUI content is not walkable
         var kids: [WireframeNode] = depth > 40 || sandboxed ? [] : v.subviews.filter { !$0.isHidden && $0.alpha > 0.01 }.map { node($0, depth: depth + 1, unmask: unmask) }
         if opaque && !sensitive { kids += Self.swiftUIText(v, unmask: unmask) }
+        // Relative to the parent's visible area: a scrolled parent (UIScrollView, paging) shifts its children by its bounds origin.
+        let scroll = v.superview?.bounds.origin ?? .zero
         return WireframeNode(
-            kind: kind, x: v.frame.origin.x, y: v.frame.origin.y, width: v.frame.width, height: v.frame.height,
+            kind: kind, x: v.frame.origin.x - scroll.x, y: v.frame.origin.y - scroll.y, width: v.frame.width, height: v.frame.height,
             text: sensitive ? nil : text, background: v.backgroundColor.flatMap(Self.hex), sensitive: sensitive, unmask: unmask, opaque: opaque, children: kids)
     }
 
@@ -72,6 +91,14 @@ public final class UIKitViewHierarchy: ViewHierarchySource {
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         guard c.getRed(&r, green: &g, blue: &b, alpha: &a), a > 0 else { return nil }
         return String(format: "#%02x%02x%02x", Int(r * 255), Int(g * 255), Int(b * 255))
+    }
+}
+
+extension UIKitViewHierarchy: ExposureReading {
+    func setExposureFields(_ fields: Set<String>) { exposureLock.locked { exposureFields = fields } }
+
+    func takeExposed() -> [(field: String, value: String)] {
+        exposureLock.locked { () -> [(field: String, value: String)] in defer { exposed = [] }; return exposed }
     }
 }
 

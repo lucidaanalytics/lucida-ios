@@ -17,6 +17,8 @@ final class FlagsService: @unchecked Sendable {
     private var exposed = Set<String>()
     private var calledSession = ""
     private var observers: [([String: FlagValue]) -> Void] = []
+    private var statusObservers: [(FlagsStatus) -> Void] = []
+    private var meta: [String: (reason: String, conditionIndex: Int, local: Bool)] = [:]
     private var personProps: Props = [:]
     private var groupProps: [String: Props] = [:]
     private static let cacheKey = "lc_flags"
@@ -72,6 +74,11 @@ final class FlagsService: @unchecked Sendable {
         if let snap { cb(snap) }
     }
 
+    /// Lifecycle notices for providers: `.changed` after a definitions/flags reload, `.stale` / `.error` when a reload fails.
+    func onStatus(_ cb: @escaping (FlagsStatus) -> Void) { lock.locked { statusObservers.append(cb) } }
+
+    private func notify(_ s: FlagsStatus) { for o in lock.locked({ statusObservers }) { o(s) } }
+
     private func apply(_ v: [String: FlagValue], _ p: [String: JSONValue]) {
         lock.lock(); values = v; payloads = p; loaded = true; let obs = observers; lock.unlock()
         for o in obs { o(v) }
@@ -92,6 +99,7 @@ final class FlagsService: @unchecked Sendable {
         for (k, r) in FlagEvaluator.evaluateAll(config.localFlags, ctx) {
             if r.requiresServer { server = true } else {
                 v[k] = r.value
+                lock.locked { meta[k] = (r.reason, r.conditionIndex, true) }
                 if let pl = r.payload { p[k] = pl }
             }
         }
@@ -120,7 +128,11 @@ final class FlagsService: @unchecked Sendable {
             anon_distinct_id: core.anonDistinctId)) else { return }
         let r = await config.transport.send(HTTPRequest(
             url: config.apiHost.appendingPathComponent("v1/flags"), headers: ["Content-Type": "application/json"], body: body))
-        guard (200..<300).contains(r.status), let j = try? JSONDecoder().decode([String: JSONValue].self, from: r.body) else { return }
+        guard (200..<300).contains(r.status), let j = try? JSONDecoder().decode([String: JSONValue].self, from: r.body) else {
+            let had = lock.locked { loaded }
+            notify(had ? .stale : .error)
+            return
+        }
         let (stale, local) = lock.locked { (mine != seq, localValues) }
         if stale { return }  // a newer request superseded this one
         var v: [String: FlagValue] = [:]
@@ -130,10 +142,12 @@ final class FlagsService: @unchecked Sendable {
                 let raw = o["value"] ?? o["variant"] ?? .bool(o["enabled"]?.boolValue ?? false)
                 v[k] = Self.flagValue(raw) ?? .bool(false)
                 if let pl = o["payload"] { p[k] = pl }
+                lock.locked { meta[k] = (o["reason"]?.stringValue ?? "", Int(o["condition_index"]?.numberValue ?? -1), false) }
             } else if let f = Self.flagValue(x) { v[k] = f }
         }
         lock.locked { requestId = j["request_id"]?.stringValue }
         apply(local.merging(v) { _, n in n }, p)
+        notify(.changed)
         let cache: JSONValue = .object([
             "values": .object(v.mapValues(\.json)),
             "payloads": .object(p),
@@ -141,9 +155,26 @@ final class FlagsService: @unchecked Sendable {
         if let d = try? JSONEncoder().encode(cache) { core.gated.set(Self.cacheKey, String(decoding: d, as: UTF8.self)) }
     }
 
+    /// Fallback served when the key has no value (missing flag, failed load): no events, nothing was assigned.
+    private func fallback(_ key: String) -> FlagValue? { config.fallbacks[key].flatMap(Self.flagValue) }
+
+    func details(_ key: String) -> FlagDetails? {
+        let v = get(key)
+        let (m, rid, pl) = lock.locked { (meta[key], requestId, payloads[key]) }
+        if !lock.locked({ values[key] != nil }) {
+            guard let fb = config.fallbacks[key] else { return nil }
+            return FlagDetails(value: fb, payload: nil, variant: nil, reason: "fallback", conditionIndex: -1, requestId: nil, evaluatedLocally: false)
+        }
+        guard let v else { return nil }
+        var variant: String?
+        if case .variant(let s) = v { variant = s }
+        return FlagDetails(value: v.json, payload: pl, variant: variant, reason: m?.reason ?? "", conditionIndex: m?.conditionIndex ?? -1,
+                           requestId: rid, evaluatedLocally: m?.local ?? false)
+    }
+
     func get(_ key: String) -> FlagValue? {
         lock.lock(); let v = values[key]; let rid = requestId; lock.unlock()
-        guard let v else { return nil }
+        guard let v else { return fallback(key) }
         guard config.flagOptions.sendFeatureFlagEvent else { return v }
         let sid = core.sessionId
         lock.lock()

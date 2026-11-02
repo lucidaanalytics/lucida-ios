@@ -9,7 +9,7 @@ public final class LucidaClient: @unchecked Sendable {
     private let guides: GuidesService
     private let autocapture: Autocapture
     private let debugOn: DebugBox
-    private let lock = NSRecursiveLock()
+    private let lock: NSRecursiveLock
     #if canImport(UIKit)
     private lazy var autocaptureTap = UIKitAutocaptureTap(engine: autocapture)
     #endif
@@ -18,12 +18,17 @@ public final class LucidaClient: @unchecked Sendable {
         self.config = config
         let dbg = DebugBox(config.debug)
         debugOn = dbg
-        core = Core(config: config) { if dbg.on { print("[lucida]", $0) } }
+        let l = NSRecursiveLock()
+        lock = l
+        let c = Core(config: config) { if dbg.on { print("[lucida]", $0) } }
+        core = c
         autocapture = Autocapture(core: core, config: config.autocapture, clock: config.clock)
         let flags = FlagsService(core: core, config: config)
         flagsService = flags
         guides = GuidesService(core: core, config: config) { flags.get($0)?.isOn ?? false }
-        replay = config.disabled ? nil : ReplayRecorder(core: core, config: config) { flags.get($0)?.isOn ?? false }
+        // Recorder events (`$dead_swipe`, `$sensitive_capture`) take the same lock as `capture`.
+        replay = config.disabled ? nil : ReplayRecorder(core: c, config: config, flagEnabled: { flags.get($0)?.isOn ?? false },
+                                                        capture: { e, p in l.lock(); defer { l.unlock() }; _ = c.capture(e, p) })
         guard !config.disabled else { return }
         core.onChange.append { [weak self] c in
             guard let self else { return }
@@ -67,7 +72,17 @@ public final class LucidaClient: @unchecked Sendable {
         var p: Props = ["$app_version": .string(v)]
         if let b = config.appBuild { p["$app_build"] = .string(b) }
         if let prev { p["$previous_app_version"] = .string(prev) }
-        capture(prev == nil ? "$app_installed" : "$app_updated", p)
+        if prev == nil && config.installAttribution {
+            // The version key is stored below, so the install is sent once even though attribution resolves later.
+            let source = config.installAttributionSource ?? AdServicesAttributionSource()
+            let base = p
+            Task { [weak self] in
+                let extra = await source.fetch()
+                self?.capture("$app_installed", base.merging(extra) { _, new in new })
+            }
+        } else {
+            capture(prev == nil ? "$app_installed" : "$app_updated", p)
+        }
         core.gated.set("lc_app_version", v)
     }
 
@@ -155,6 +170,10 @@ public final class LucidaClient: @unchecked Sendable {
     public func flag(_ key: String) -> FlagValue? { flagsService.get(key) }
     public func isFeatureEnabled(_ key: String) -> Bool { flagsService.get(key)?.isOn ?? false }
     public func flagPayload(_ key: String) -> JSONValue? { flagsService.payload(key) }
+    /// Value, payload, variant and raw Lucida reason for a flag (`fallback` when served from `config.fallbacks`); nil when unknown.
+    public func flagDetails(_ key: String) -> FlagDetails? { flagsService.details(key) }
+    /// `.changed` after each flag reload, `.stale` when a reload fails after a success, `.error` when none has succeeded.
+    public func onFlagsStatus(_ cb: @escaping (FlagsStatus) -> Void) { flagsService.onStatus(cb) }
     public func reloadFlags() async { await flagsService.reload() }
     public func onFlags(_ cb: @escaping ([String: FlagValue]) -> Void) { flagsService.onChange(cb) }
 
@@ -180,6 +199,14 @@ public final class LucidaClient: @unchecked Sendable {
     public func pauseReplay() { replay?.pause() }
     public func resumeReplay() { replay?.resume() }
     public var isReplayActive: Bool { replay?.isActive ?? false }
+
+    /// Controlled exposure (P-L12): sends `value` RSA-encrypted with the project key as `$sensitive_capture`, only when
+    /// `field` is listed in the project's exposure fields, the key is present and analytics + replay consent is held.
+    /// Only an audited reveal on the server can read it; identical values are sent once per session.
+    public func captureSensitive(_ field: String, value: String) {
+        guard !config.disabled else { return }
+        replay?.captureSensitive(field, value: value)
+    }
 
     // MARK: Lifecycle
 

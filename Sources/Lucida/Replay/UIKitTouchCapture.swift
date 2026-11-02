@@ -50,6 +50,7 @@ final class UIKitTouchCapture: NSObject, UIGestureRecognizerDelegate {
         case .began:
             began = Date()
             path = [TouchPoint(x: p.x, y: p.y, offsetMs: 0)]
+            recorder?.swipeBegan()  // still on the main thread, before the content moves
         case .changed:
             let ms = Int64(Date().timeIntervalSince(began) * 1000)
             // ~20 samples a second is enough to draw the swipe
@@ -57,6 +58,9 @@ final class UIKitTouchCapture: NSObject, UIGestureRecognizerDelegate {
         case .ended, .cancelled:
             path.append(TouchPoint(x: p.x, y: p.y, offsetMs: Int64(Date().timeIntervalSince(began) * 1000)))
             recorder?.swipe(path)
+            if g.state == .ended, let r = recorder, let a = path.first, let b = path.last {
+                Task.detached { await r.swipeEnded(from: a, to: b) }  // waits ~700 ms off the main thread, then compares
+            }
             path = []
         default: break
         }

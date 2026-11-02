@@ -68,6 +68,7 @@ func makeConfig(
     c.store = store
     c.clock = clock
     c.lifecycle = lifecycle
+    c.installAttribution = false  // async install attribution has its own tests
     c.flushAt = 1000  // tests flush explicitly
     c.flushInterval = 3600
     tweak(&c)

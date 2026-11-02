@@ -164,3 +164,18 @@ public struct EvalResult: Equatable, Sendable {
 
     var requiresServer: Bool { reason == "requires_server" }
 }
+
+/// Why a flag read returned what it did. `reason` is the raw Lucida reason (`condition_match`, `kill_switch`, `fallback`, ...).
+public struct FlagDetails: Equatable, Sendable {
+    public var value: JSONValue
+    public var payload: JSONValue?
+    public var variant: String?
+    public var reason: String
+    /// -1 when no condition decided the result.
+    public var conditionIndex: Int
+    public var requestId: String?
+    public var evaluatedLocally: Bool
+}
+
+/// Flag lifecycle notices for providers (see `LucidaClient.onFlagsStatus`).
+public enum FlagsStatus: Equatable, Sendable { case changed, stale, error }

@@ -31,6 +31,14 @@ public struct ReplayConfig {
     /// Only these screens are recorded (empty = all). The deny list wins; recording pauses on a denied screen.
     public var screenAllowList: [String] = []
     public var screenDenyList: [String] = []
+    /// Screen-name patterns (`*` = any run of characters, case-insensitive, whole name) whose snapshots mask all text,
+    /// input values and images, whatever the unmask markers say. Union with the project's `replay_mask_screens`.
+    public var maskScreens: [String] = []
+    /// Regular expressions whose matches are starred in any text replay would otherwise show (screenshots paint the
+    /// whole view). Union with the project's `replay_mask_text_patterns`; a pattern that does not compile is ignored.
+    public var maskTextPatterns: [String] = []
+    /// `$dead_swipe` when a swipe of 48 pt or more changed nothing on screen (UIKit source only).
+    public var captureDeadSwipes = true
     /// `.screenshot` sends masked JPEG frames instead of wireframes (masks are painted before encoding, on device).
     public var mode: ReplayMode = .wireframe
     /// JPEG quality 0...1 for `.screenshot`.

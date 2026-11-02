@@ -66,12 +66,70 @@ SwiftUI: `.lucidaScreen("Home", client: lucida)` records `$screen` on appear.
   (per session), `throttleDelay`, `view.lucidaUnmask()`; secure fields and `lucidaMarkSensitive()` views are never readable.
   `client.startReplay()` / `stopReplay()` / `isReplayActive`.
 
+### Session replay: privacy additions
+
+Every remote value below arrives in `GET /v1/config` and only ever adds masking to what the app configured.
+
+- **Masked screens** (P-M17): `cfg.replay.maskScreens = ["Checkout", "Pay*"]` plus the project's `replay_mask_screens`
+  (case-insensitive, `*` = any run of characters, whole screen name). On a matching screen every text, input value and
+  image is masked whatever `maskText` / `maskAllTextInputs` / `maskAllImages` or `lucidaUnmask()` say; screenshots paint
+  them all over.
+- **Text patterns** (P-M46): `cfg.replay.maskTextPatterns = [#"\d{4,}"#]` plus `replay_mask_text_patterns` (regular
+  expressions; one that does not compile is ignored). Matches in any text the wireframe would show unmasked become `*`
+  (whitespace kept); in screenshot mode a view whose text matches is painted over.
+- **`$dead_swipe`** (P-M46, `cfg.replay.captureDeadSwipes`, default on, needs `captureTouches`): a pan of 48 pt or more
+  after which the view hierarchy is unchanged ~700 ms later. Properties: `$screen_name`, `$swipe_direction`
+  (`left|right|up|down`), `$swipe_distance` (pt). Never text or view content; at most one per 2 s.
+- **Controlled exposure** (P-L12): when the project sends `replay_exposure_fields` and `replay_exposure_key`, a listed
+  field's value is RSA-OAEP-SHA256 encrypted on device and sent as `$sensitive_capture` (`$exposure_field`,
+  `$exposure_kid`, `$exposure_ciphertext`, `$screen_name`, `$exposure_truncated` when cut to 190 bytes). Only an audited
+  reveal on the server can read it. Explicit: `client.captureSensitive("card_number", value: v)`. Automatic: a non-secure
+  `UITextField` / `UITextView` whose `accessibilityIdentifier` is listed is read during the snapshot walk (it stays masked
+  in the replay). Secure fields are never captured; identical values are sent once per session; nothing is persisted.
+
 SwiftUI in replay: hosting views are walked through their accessibility elements (labels only, never values), so SwiftUI
 text appears in wireframes starred like UIKit text; the hosting view itself is a masked placeholder (`data-lc-mask`) and is
 painted over in screenshot mode unless `.lucidaUnmask()` covers it.
 
 Not built: push registration (needs a scope decision), queue encryption adapter (only the port).
 The UIKit adapters type-check for the iOS simulator SDK but are not exercised by `swift test`.
+
+## In-app guides
+
+Kinds `modal`, `banner`, `announcement`, `slideout`, `tour`, `carousel` (Back / Next with a slide pager) and, with an
+anchoring presenter, `tooltip` / `hotspot`. A step's `native_id` anchors it to a native view by its `accessibilityIdentifier` (`UIKitGuidePresenter` implements `AnchoredGuidePresenter`): the bubble is drawn next
+to the view and follows it on scroll and relayout; a hotspot is a pulsing dot that opens the step. When the view does not
+appear within `wait_ms` (default 3 s, max 15 s) the SDK sends `$guide_target_missing {step_id, selector}` and shows the step
+unanchored; a view gone for 2 s closes the step. The resolved `appearance` tokens (background, text, accent, radius,
+font) apply, with `appearance.dark.tokens` when `theme_mode` is dark, or auto and the device is dark.
+
+## Fallbacks and flag details
+
+`config.fallbacks = ["new_nav": .bool(false)]` serves that value, with reason `fallback`, when a flag has no value
+(missing, failed load, cold start). Fallback reads emit no `$feature_flag_called` / `$exposure`.
+`client.flagDetails("key")` returns `FlagDetails` (value, payload, variant, raw `reason`, `conditionIndex`, `requestId`,
+`evaluatedLocally`), or nil for an unknown key without a fallback. `client.onFlagsStatus { .changed/.stale/.error }` reports reloads.
+
+## OpenFeature
+
+Product `LucidaOpenFeature` (depends on open-feature/swift-sdk 0.3+, Apache-2.0):
+
+```swift
+let provider = LucidaProvider(client: client)
+await OpenFeatureAPI.shared.setProviderAndWait(provider: provider, initialContext: ImmutableContext(targetingKey: "u1"))
+let on = OpenFeatureAPI.shared.getClient().getBooleanValue(key: "new_nav", defaultValue: false)
+```
+
+Context attrs: `groups` (type -> key), `groupProperties` (type -> map), everything else becomes person properties.
+Reads carry reason + `flagMetadata` (`lucidaReason`, `conditionIndex`, `requestId`, `evaluatedLocally`); `track()` maps to `capture`.
+## Install attribution
+
+On first open `$app_installed` carries Apple Search Ads attribution from AdServices (iOS 14.3+): the
+`AAAttribution` token is POSTed (text/plain, 10 s timeout, 404 retried up to 3 times) to Apple's attribution API.
+Props: `$install_store=app_store`, `$install_adservices_attribution`, and when attributed `$utm_source=apple_search_ads`,
+`$utm_medium=cpc`, `$utm_campaign/$utm_term/$utm_content` (campaign/keyword/ad group id) and `$asa_*` ids. If the token
+or request fails the event still goes out with `$install_store` only. Disable with `config.installAttribution = false`;
+swap the source with `config.installAttributionSource`. Opted-out users send nothing.
 
 ## Ports and adapters
 

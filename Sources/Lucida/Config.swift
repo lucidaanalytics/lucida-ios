@@ -17,6 +17,8 @@ public struct LucidaConfig {
     /// Definitions for on-device flag evaluation; flags needing the server still use POST /v1/flags.
     public var localFlags: [FlagDefinition] = []
     public var localFlagsContext = EvalContext(distinctId: "")
+    /// `{flagKey: value}` served with reason `fallback` when a flag has no value (missing, failed load, cold start). No exposure events.
+    public var fallbacks: [String: JSONValue] = [:]
     public var replay = ReplayConfig()
     public var guides = GuidesConfig()
 
@@ -36,6 +38,10 @@ public struct LucidaConfig {
     public var queueCipher: QueueCipher?
     /// Own-backend hosts that receive `X-Lucida-*` headers via `LucidaClient.tracedRequest(_:)`.
     public var tracingHeaders: [String] = []
+    /// Send Apple Search Ads (AdServices) attribution on the first-open `$app_installed`.
+    public var installAttribution = true
+    /// Override the install attribution source (default: `AdServicesAttributionSource`).
+    public var installAttributionSource: InstallAttributionSource?
     public var maxBatchSize = 100
     public var maxRetries = 5
     public var retryBaseDelay: TimeInterval = 1
