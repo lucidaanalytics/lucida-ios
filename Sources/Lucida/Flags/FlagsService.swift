@@ -13,6 +13,7 @@ final class FlagsService: @unchecked Sendable {
     private var requestId: String?
     private var loaded = false
     private var seq = 0
+    private var applied = 0  // seq of the newest response applied
     private var called = Set<String>()
     private var exposed = Set<String>()
     private var calledSession = ""
@@ -133,8 +134,14 @@ final class FlagsService: @unchecked Sendable {
             notify(had ? .stale : .error)
             return
         }
-        let (stale, local) = lock.locked { (mine != seq, localValues) }
-        if stale { return }  // a newer request superseded this one
+        // Skip only when a newer response already landed: dropping every superseded response let `await reload()`
+        // return before any values were applied whenever another reload (e.g. the launch preload) was in flight.
+        let (stale, local) = lock.locked { () -> (Bool, [String: FlagValue]) in
+            let s = mine < applied
+            if !s { applied = mine }
+            return (s, localValues)
+        }
+        if stale { return }
         var v: [String: FlagValue] = [:]
         var p: [String: JSONValue] = [:]
         for (k, x) in j["flags"]?.objectValue ?? [:] {
