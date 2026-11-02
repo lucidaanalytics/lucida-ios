@@ -3,7 +3,7 @@ import XCTest
 @testable import Lucida
 
 /// P-M17 masked screens, P-M46 text patterns and `$dead_swipe`, P-L12 controlled exposure.
-final class ReplayPrivacyTests: XCTestCase {
+final class ReplayScreenPrivacyTests: XCTestCase {
     final class Src: ViewHierarchySource, ExposureReading {
         var label = "Order 1234"
         var fields: Set<String> = []

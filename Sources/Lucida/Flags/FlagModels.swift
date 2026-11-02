@@ -175,6 +175,12 @@ public struct FlagDetails: Equatable, Sendable {
     public var conditionIndex: Int
     public var requestId: String?
     public var evaluatedLocally: Bool
+
+    public init(value: JSONValue, payload: JSONValue?, variant: String?, reason: String, conditionIndex: Int,
+                requestId: String?, evaluatedLocally: Bool) {
+        self.value = value; self.payload = payload; self.variant = variant; self.reason = reason
+        self.conditionIndex = conditionIndex; self.requestId = requestId; self.evaluatedLocally = evaluatedLocally
+    }
 }
 
 /// Flag lifecycle notices for providers (see `LucidaClient.onFlagsStatus`).

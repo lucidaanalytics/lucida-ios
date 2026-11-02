@@ -53,7 +53,7 @@ final class GuidesAnchorTests: XCTestCase {
     }
 
     func testHotspotNeedsANativeIdAndAnchoredPresenter() async {
-        let (g, p, _, _) = setup(#"{"guides":[{"id":"h0","name":"H","kind":"hotspot","conditions":{},"steps":[{"id":"a","selector":"#web"}]},{"id":"h1","name":"H","kind":"hotspot","conditions":{},"steps":[{"id":"a","native_id":"bell"}]}]}"#)
+        let (g, p, _, _) = setup(##"{"guides":[{"id":"h0","name":"H","kind":"hotspot","conditions":{},"steps":[{"id":"a","selector":"#web"}]},{"id":"h1","name":"H","kind":"hotspot","conditions":{},"steps":[{"id":"a","native_id":"bell"}]}]}"##)
         await g.reload()
         g.show(on: "Home")
         XCTAssertEqual(p.anchored.map(\.guide), ["h1"])
