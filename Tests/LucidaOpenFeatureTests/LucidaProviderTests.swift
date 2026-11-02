@@ -6,11 +6,22 @@ import XCTest
 @testable import LucidaOpenFeature
 
 final class LucidaProviderTests: XCTestCase {
+    /// $LUCIDA_TESTDATA, else the nearest testdata/ above this file (monorepo and mirror layouts both work).
+    static func testdata(_ rel: String) throws -> URL {
+        if let env = ProcessInfo.processInfo.environment["LUCIDA_TESTDATA"], !env.isEmpty {
+            return URL(fileURLWithPath: env).appendingPathComponent(rel)
+        }
+        var dir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        while dir.path != "/" {
+            let f = dir.appendingPathComponent("testdata").appendingPathComponent(rel)
+            if FileManager.default.fileExists(atPath: f.path) { return f }
+            dir.deleteLastPathComponent()
+        }
+        throw CocoaError(.fileNoSuchFile)
+    }
+
     func testReasonTableMatchesSharedJSON() throws {
-        // #filePath: sdks/ios/Tests/LucidaOpenFeatureTests/<file>; the repo root is five components up.
-        var url = URL(fileURLWithPath: #filePath)
-        for _ in 0..<6 { url.deleteLastPathComponent() }
-        let data = try Data(contentsOf: url.appendingPathComponent("testdata/openfeature/reasons.json"))
+        let data = try Data(contentsOf: try Self.testdata("openfeature/reasons.json"))
         let root = try JSONSerialization.jsonObject(with: data) as! [String: Any]
         for (raw, v) in root["reasons"] as! [String: [String: String]] {
             XCTAssertEqual(ReasonMap.openFeature(raw, variantValue: false), v["reason"], raw)

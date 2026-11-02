@@ -10,7 +10,8 @@ let package = Package(
     ],
     dependencies: [
         // Apache-2.0; only the LucidaOpenFeature target links it.
-        .package(url: "https://github.com/open-feature/swift-sdk.git", from: "0.3.0"),
+        // 0.x minors break the provider protocol, so stay on the line the provider is written against
+        .package(url: "https://github.com/open-feature/swift-sdk.git", .upToNextMinor(from: "0.7.0")),
     ],
     targets: [
         .target(name: "Lucida"),

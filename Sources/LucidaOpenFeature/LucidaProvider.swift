@@ -5,36 +5,51 @@ import OpenFeature
 
 /// OpenFeature provider over the Lucida iOS SDK (static-context paradigm).
 /// `initialize` / `onContextSet` identify the targeting key, apply attributes as person properties and reload flags;
-/// reads are synchronous over the loaded flags. Written against swift-sdk 0.3.x.
-public final class LucidaProvider: FeatureProvider, Tracking {
+/// reads are synchronous over the loaded flags. Written against open-feature/swift-sdk 0.7.x.
+public final class LucidaProvider: FeatureProvider, @unchecked Sendable {
     public static let name = "Lucida"
-    public var hooks: [any Hook] = []
-    public var metadata: ProviderMetadata = LucidaMetadata()
+    public let hooks: [any Hook] = []
+    public let metadata: ProviderMetadata = LucidaMetadata()
     private let client: LucidaClient
-    private let events = PassthroughSubject<ProviderEvent?, Never>()
+    // keeps `status` in step with the events sent, and replays the current status to late subscribers
+    private let tracker = ProviderStatusTracker()
 
     public struct LucidaMetadata: ProviderMetadata { public var name: String? = LucidaProvider.name }
 
     public init(client: LucidaClient) {
         self.client = client
-        client.onFlagsStatus { [events] status in
+        client.onFlagsStatus { [tracker] status in
             switch status {
-            case .changed: events.send(.configurationChanged)
-            case .stale: events.send(.stale)
-            case .error: events.send(.error(errorCode: .general, message: "Lucida flag load failed"))
+            case .changed: tracker.send(.configurationChanged(nil))
+            case .stale: tracker.send(.stale(nil))
+            case .error: tracker.send(.error(ProviderEventDetails(message: "Lucida flag load failed", errorCode: .general)))
             }
         }
     }
 
-    public func observe() -> AnyPublisher<ProviderEvent?, Never> { events.eraseToAnyPublisher() }
+    public var status: ProviderStatus { tracker.status }
 
-    public func initialize(initialContext: EvaluationContext?) async throws {
-        await apply(initialContext)
-        events.send(.ready)
+    public func observe() -> AnyPublisher<ProviderEvent, Never> { tracker.observe() }
+
+    public func initialize(initialContext: EvaluationContext?) -> Future<Void, Never> {
+        Future { [self] promise in
+            Task {
+                await apply(initialContext)
+                tracker.send(.ready(nil))
+                promise(.success(()))
+            }
+        }
     }
 
-    public func onContextSet(oldContext: EvaluationContext?, newContext: EvaluationContext) async throws {
-        await apply(newContext)
+    public func onContextSet(oldContext: EvaluationContext?, newContext: EvaluationContext) -> Future<Void, Never> {
+        tracker.send(.reconciling(nil))
+        return Future { [self] promise in
+            Task {
+                await apply(newContext)
+                tracker.send(.contextChanged(nil))
+                promise(.success(()))
+            }
+        }
     }
 
     private func apply(_ ctx: EvaluationContext?) async {
@@ -68,20 +83,20 @@ public final class LucidaProvider: FeatureProvider, Tracking {
         // A json flag's value is its payload; boolean/variant flags read as their value.
         guard let d = client.flagDetails(key) else { return missing(key, defaultValue) }
         return ProviderEvaluation(
-            value: ContextMap.value(d.payload ?? d.value), variant: d.variant,
-            reason: ReasonMap.openFeature(d.reason, variantValue: d.variant != nil), flagMetadata: Self.metadata(d))
+            value: ContextMap.value(d.payload ?? d.value), flagMetadata: Self.metadata(d), variant: d.variant,
+            reason: ReasonMap.openFeature(d.reason, variantValue: d.variant != nil))
     }
 
     private func resolve<T>(_ key: String, _ def: T, _ pick: (JSONValue) -> T?) -> ProviderEvaluation<T> {
         guard let d = client.flagDetails(key) else { return missing(key, def) }
         guard let v = pick(d.value) ?? d.payload.flatMap(pick) else {
             return ProviderEvaluation(
-                value: def, reason: "ERROR", errorCode: .typeMismatch,
-                errorMessage: "flag \(key) is not of the requested type", flagMetadata: Self.metadata(d))
+                value: def, flagMetadata: Self.metadata(d), reason: "ERROR", errorCode: .typeMismatch,
+                errorMessage: "flag \(key) is not of the requested type")
         }
         return ProviderEvaluation(
-            value: v, variant: d.variant, reason: ReasonMap.openFeature(d.reason, variantValue: d.variant != nil),
-            flagMetadata: Self.metadata(d))
+            value: v, flagMetadata: Self.metadata(d), variant: d.variant,
+            reason: ReasonMap.openFeature(d.reason, variantValue: d.variant != nil))
     }
 
     private func missing<T>(_ key: String, _ def: T) -> ProviderEvaluation<T> {
@@ -98,7 +113,7 @@ public final class LucidaProvider: FeatureProvider, Tracking {
     // MARK: Tracking
 
     /// Event name = `key`; properties = the details' fields plus `$value`. The identity is the one set by the context.
-    public func track(key: String, context: EvaluationContext?, details: TrackingEventDetails?) throws {
+    public func track(key: String, context: (any EvaluationContext)?, details: (any TrackingEventDetails)?) throws {
         var props: Props = (details?.asMap() ?? [:]).mapValues(ContextMap.json)
         if let v = details?.getValue() { props["$value"] = .number(v) }
         client.capture(key, props)
