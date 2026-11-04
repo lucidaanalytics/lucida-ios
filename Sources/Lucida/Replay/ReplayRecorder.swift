@@ -34,9 +34,8 @@ final class ReplayRecorder: @unchecked Sendable {
     private var paused = false
     private var remote: RemoteReplayConfig?
     private var remoteLoaded = false
-    /// Chunks held back until the session reaches the minimum duration.
-    private var held: [[JSONValue]] = []
-    private static let maxHeld = 20  // shortcut: bounded memory, oldest chunks beyond this are dropped; raise with a size budget if needed
+    /// Chunks that cannot go out yet (min duration, offline, upload backoff): on disk, encrypted with the queue cipher.
+    private let spool: ReplaySpool
     private var sessionStart = Date.distantPast
     private(set) var screen = "Unknown"
     /// Last snapshot sent: taps and swipes are hit-tested against it (a touch before any snapshot is dropped).
@@ -58,7 +57,15 @@ final class ReplayRecorder: @unchecked Sendable {
         source = src
         screenshots = config.replay.mode == .screenshot ? (config.replay.screenshotSource ?? Self.platformScreenshots()) : nil
         transport = config.replay.replayTransport ?? config.transport
+        let log = core.debugLog
+        spool = ReplaySpool(
+            store: config.queueCipher.map { EncryptedStore(config.store, cipher: $0, keys: [ReplaySpool.key], prefixes: ["\(ReplaySpool.key)."]) } ?? config.store,
+            budget: config.replay.spoolBudgetBytes
+        ) { sid, chunks, bytes in log("replay spool over budget: dropped session \(sid) (\(chunks) chunks, \(bytes) bytes)") }
     }
+
+    /// Erase every spilled chunk (opt-out, reset).
+    func clearSpool() { spool.clear() }
 
     private static func platformSource(_ c: ReplayConfig) -> ViewHierarchySource? {
         #if canImport(UIKit)
@@ -112,7 +119,10 @@ final class ReplayRecorder: @unchecked Sendable {
         }
     }
 
-    func stop() { lock.lock(); task?.cancel(); task = nil; held = []; lock.unlock() }
+    func stop() { lock.lock(); task?.cancel(); task = nil; lock.unlock()
+        // Held chunks never went out: give their seq numbers back so the stream stays gapless. Pending uploads stay.
+        if let m = spool.removeHeld().filter({ $0.sid == lastSession }).map(\.seq).min() { seq = m }
+    }
 
     /// Pause keeps the loop alive but captures nothing until `resume()`.
     func pause() { lock.locked { paused = true } }
@@ -202,7 +212,8 @@ final class ReplayRecorder: @unchecked Sendable {
     func tick() async {
         // The replay category must be granted; revoking it drops state so a re-grant starts clean.
         guard core.consent.analytics, core.consent.replay else {
-            lock.locked { lastSnap = nil; touches = []; held = [] }
+            lock.locked { lastSnap = nil; touches = [] }
+            spool.clear()
             lastFingerprint = nil
             return
         }
@@ -235,7 +246,7 @@ final class ReplayRecorder: @unchecked Sendable {
         lastSnapAt = now
         let fp = frame.map { Hashing.hex($0.jpeg) } ?? Self.fingerprint(snap)
         let rotated = sid != lastSession
-        if rotated { seq = 0; lastSession = sid; sessionStart = now; lock.locked { held = [] } }  // a session cut short is dropped
+        if rotated { lastSession = sid; sessionStart = now; spool.removeHeld(except: sid); seq = spool.nextSeq(sid) }  // a session cut short is dropped; seq resumes after a restart
         let pending = lock.locked { () -> [JSONValue] in defer { touches = [] }; return touches }
         var events: [JSONValue] = pending
         if rotated || fp != lastFingerprint {
@@ -254,14 +265,12 @@ final class ReplayRecorder: @unchecked Sendable {
                 lock.locked { lastSnap = snap }
             }
         }
-        guard !events.isEmpty else { return }
         let minMs = ReplayPolicy.minDurationMs(local: config.replay.minDurationMs, remote: remote)
-        if minMs > 0, now.timeIntervalSince(sessionStart) * 1000 < Double(minMs) {
-            lock.locked { held.append(events); if held.count > Self.maxHeld { held.removeFirst() } }
-            return
-        }
-        let backlog = lock.locked { () -> [[JSONValue]] in defer { held = [] }; return held }
-        for chunk in backlog + [events] { await send(chunk, sessionId: sid) }
+        let holding = minMs > 0 && now.timeIntervalSince(sessionStart) * 1000 < Double(minMs)
+        if !events.isEmpty { store(events, sessionId: sid, held: holding) }
+        if holding { return }
+        spool.release(sid)
+        await drain()
     }
 
     private static func fingerprint(_ snap: WireframeSnapshot) -> String {
@@ -270,15 +279,28 @@ final class ReplayRecorder: @unchecked Sendable {
         return (try? enc.encode(RRWebWireframe.fullSnapshot(snap, maskText: true, at: 0))).map { String(decoding: $0, as: UTF8.self) } ?? ""
     }
 
-    private func send(_ events: [JSONValue], sessionId: String) async {
+    private func store(_ events: [JSONValue], sessionId: String, held: Bool) {
         let body: JSONValue = .object([
-            "api_key": .string(config.apiKey), "session_id": .string(sessionId), "window_id": .string(core.session.windowId),
+            "session_id": .string(sessionId), "window_id": .string(core.session.windowId),
             "seq": .number(Double(seq)), "events": .array(events),
         ])
-        guard var data = try? JSONEncoder().encode(body), data.count <= config.replay.maxEventBytes else { return }
-        var headers = ["Content-Type": "application/json"]
-        if data.count >= 1024, let z = Gzip.compress(data) { data = z; headers["Content-Encoding"] = "gzip" }
-        let r = await transport.send(HTTPRequest(url: config.apiHost.appendingPathComponent("v1/replay"), headers: headers, body: data))
-        if (200..<300).contains(r.status) { seq += 1 } else { lastFingerprint = nil }  // retry as a fresh snapshot next tick
+        guard let data = try? JSONEncoder().encode(body), data.count <= config.replay.maxEventBytes else { return }
+        spool.add(sid: sessionId, seq: seq, held: held, body: data)
+        seq += 1
+    }
+
+    /// Uploads spilled chunks in order; stops at the first retryable failure (the next tick is the backoff).
+    private func drain() async {
+        for e in spool.entries where !e.held {
+            guard let raw = spool.read(e), case .object(var obj)? = try? JSONDecoder().decode(JSONValue.self, from: raw) else { spool.remove(e); continue }
+            obj["api_key"] = .string(config.apiKey)
+            guard var data = try? JSONEncoder().encode(JSONValue.object(obj)) else { spool.remove(e); continue }
+            var headers = ["Content-Type": "application/json"]
+            if data.count >= 1024, let z = Gzip.compress(data) { data = z; headers["Content-Encoding"] = "gzip" }
+            let r = await transport.send(HTTPRequest(url: config.apiHost.appendingPathComponent("v1/replay"), headers: headers, body: data))
+            if (200..<300).contains(r.status) { spool.remove(e) }
+            else if r.status == 0 || r.status == 408 || r.status == 429 || r.status >= 500 { lastFingerprint = nil; return }  // fresh snapshot after the outage
+            else { spool.remove(e); core.debugLog("replay chunk rejected with \(r.status); dropped") }
+        }
     }
 }

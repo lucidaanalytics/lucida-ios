@@ -34,6 +34,7 @@ public final class LucidaClient: @unchecked Sendable {
             guard let self else { return }
             if c == .identify || c == .reset || c == .group, self.config.flagOptions.preload { Task { await self.flagsService.reload(); await self.guides.reload() } }
             if c == .consent && self.core.consent.analytics { self.afterConsent() }
+            if c == .reset || (c == .consent && !(self.core.consent.analytics && self.core.consent.replay)) { self.replay?.clearSpool() }
         }
         trackInstallOrUpdate()
         capture("$app_opened")

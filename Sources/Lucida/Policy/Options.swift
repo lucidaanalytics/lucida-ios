@@ -37,18 +37,20 @@ public protocol QueueCipher: Sendable {
     func decrypt(_ cipher: String) -> String?
 }
 
-/// Decorator: values under `keys` are stored encrypted, everything else passes through.
+/// Decorator: values under `keys` (or a key starting with one of `prefixes`) are stored encrypted, everything else passes through.
 final class EncryptedStore: KeyValueStore, @unchecked Sendable {
     private let inner: KeyValueStore
     private let cipher: QueueCipher
     private let keys: Set<String>
+    private let prefixes: [String]
 
-    init(_ inner: KeyValueStore, cipher: QueueCipher, keys: Set<String>) {
-        self.inner = inner; self.cipher = cipher; self.keys = keys
+    init(_ inner: KeyValueStore, cipher: QueueCipher, keys: Set<String>, prefixes: [String] = []) {
+        self.inner = inner; self.cipher = cipher; self.keys = keys; self.prefixes = prefixes
     }
 
-    func get(_ key: String) -> String? { inner.get(key).flatMap { keys.contains(key) ? cipher.decrypt($0) : $0 } }
-    func set(_ key: String, _ value: String) { inner.set(key, keys.contains(key) ? cipher.encrypt(value) : value) }
+    private func covers(_ key: String) -> Bool { keys.contains(key) || prefixes.contains { key.hasPrefix($0) } }
+    func get(_ key: String) -> String? { inner.get(key).flatMap { covers(key) ? cipher.decrypt($0) : $0 } }
+    func set(_ key: String, _ value: String) { inner.set(key, covers(key) ? cipher.encrypt(value) : value) }
     func remove(_ key: String) { inner.remove(key) }
 }
 

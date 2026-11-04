@@ -49,6 +49,17 @@ final class InstallAttributionTests: XCTestCase {
         XCTAssertEqual(p["$asa_campaign_id"], .string("2"))
     }
 
+    func testAdServicesRetriesServerErrorsAndStopsOnBadToken() async {
+        let t = SeqTransport([500, 0, 200])
+        let p = await AdServicesAttributionSource(transport: t, retryDelay: 0, attempts: 3) { "tok" }.fetch()
+        XCTAssertEqual(t.sent.count, 3)
+        XCTAssertEqual(p["$asa_campaign_id"], .string("2"))
+        let bad = SeqTransport([400, 200])
+        let q = await AdServicesAttributionSource(transport: bad, retryDelay: 0, attempts: 3) { "tok" }.fetch()
+        XCTAssertEqual(bad.sent.count, 1)
+        XCTAssertEqual(q, ["$install_store": .string("app_store")])
+    }
+
     func testNoTokenIsStoreOnly() async {
         let s = AdServicesAttributionSource(transport: SeqTransport([200]), retryDelay: 0) { nil }
         let p = await s.fetch()

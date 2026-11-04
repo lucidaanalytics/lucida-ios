@@ -15,7 +15,7 @@ final class Core {
     private let config: LucidaConfig
     private let person: PersonMode
     private let hooks: HookChain
-    private let debugLog: (String) -> Void
+    let debugLog: (String) -> Void
     let tracing: TracingHeaders
     private var pre: [WireEvent] = []
     /// Observers of every event that passed the consent gate (flags, replay markers).

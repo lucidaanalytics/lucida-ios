@@ -19,6 +19,8 @@ public struct ReplayConfig {
     public var captureTouches = true
     /// Largest single event sent (the gateway accepts 10 MB decompressed).
     public var maxEventBytes = 5_000_000
+    /// Disk budget for chunks that wait (min duration, offline, upload backoff); over it the oldest whole session is dropped.
+    public var spoolBudgetBytes = 10 * 1024 * 1024
     /// Where view hierarchies come from. Default (iOS): the key window via UIKit.
     public var source: ViewHierarchySource?
     public var replayTransport: HTTPTransport?
