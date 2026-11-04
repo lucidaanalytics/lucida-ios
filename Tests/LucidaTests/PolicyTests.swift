@@ -339,6 +339,7 @@ final class ReplayPrivacyTests: XCTestCase {
         cfg.replay.source = src
         let t2 = FakeTransport()
         cfg.transport = t2
+        cfg.store = MemoryKeyValueStore()  // the earlier recorders' spooled chunks would upload here too
         let core2 = Core(config: cfg) { _ in }
         let thr = ReplayRecorder(core: core2, config: cfg)!
         await thr.tick()
